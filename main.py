@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 
 from nse_client import NSEClient
+from notifier import AlertNotifier
+from report import generate_summary_image
 from storage import DataStore
 from validation import assert_no_duplicates, validate_dataframe
 
@@ -29,6 +31,7 @@ def main() -> None:
 
     client = NSEClient()
     store = DataStore()
+    notifier = AlertNotifier()
 
     try:
         dataframe = client.fetch_current_data()
@@ -41,7 +44,15 @@ def main() -> None:
 
         output_path = store.append_csv(validated, filename="fii_dii_daily.csv")
         logger.info("Data collection complete. Output: %s", output_path)
+
+        image_path, caption = generate_summary_image()
+        if image_path:
+            notifier.send_telegram_photo(image_path, caption)
+            logger.info("Summary image sent: %s", image_path)
+
         print(f"\n✓ Successfully saved {len(validated)} rows to {output_path}")
+        if image_path:
+            print(f"✓ Summary image: {image_path}")
 
     except Exception as exc:
         logger.error("Data collection failed: %s", exc, exc_info=True)
