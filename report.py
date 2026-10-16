@@ -2,14 +2,82 @@
 
 This script reads the SQLite dataset produced by the data pipeline and prints
 an analyst-friendly summary, including recent activity, bullish/bearish counts,
-and monthly totals.
+and monthly totals. It also can embed a short alert summary into the image
+caption if alerts are provided.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from analytics import MarketAnalytics
+
+
+def _summarize_alerts(alerts: Iterable[dict] | None) -> str:
+    if not alerts:
+        return ""
+    alerts = list(alerts)
+    count = len(alerts)
+    # severity ranking
+    rank = {"high": 3, "medium": 2, "low": 1, "info": 0}
+    top = max(alerts, key=lambda a: rank.get(a.get("severity", "info"), 0))
+    top_msg = top.get("message", "")
+    return f"{count} alert(s): {top_msg}"
+
+
+def generate_summary_image(
+    db_path: str = "data/fii_dii_daily.db",
+    output_path: str = "data/summary.png",
+    days: int = 30,
+    alerts: Iterable[dict] | None = None,
+) -> tuple[str | None, str]:
+    """Create a compact chart image and a one-line market summary caption.
+
+    If `alerts` is provided, a short alert summary is appended to the caption.
+    """
+    analytics = MarketAnalytics(db_path=db_path)
+    df = analytics.load()
+
+    if df.empty:
+        return None, "No data available. Run the collector first."
+
+    chart_df = df.tail(days).copy()
+    chart_df["rolling_7d"] = chart_df["total_net_cr"].rolling(window=7, min_periods=1).mean()
+
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(chart_df["date"], chart_df["total_net_cr"], label="Total net (cr)", color="#1f77b4", linewidth=2)
+    ax.plot(chart_df["date"], chart_df["rolling_7d"], label="7-day avg", color="#ff7f0e", linewidth=2)
+    ax.axhline(0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+    ax.set_title("FII/DII net flow")
+    ax.set_ylabel("Crore")
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    fig.autofmt_xdate(rotation=30)
+    fig.tight_layout()
+    fig.savefig(target, dpi=180)
+    plt.close(fig)
+
+    latest = chart_df.iloc[-1]
+    base_caption = (
+        f"Latest date: {latest['date'].strftime('%Y-%m-%d')} | "
+        f"Total net: {float(latest['total_net_cr']):,.0f} cr | "
+        f"7-day avg: {float(chart_df['rolling_7d'].iloc[-1]):,.0f} cr"
+    )
+
+    alert_summary = _summarize_alerts(alerts)
+    caption = f"{base_caption}"
+    if alert_summary:
+        caption = f"{caption} | {alert_summary}"
+
+    return str(target), caption
 
 
 def generate_report(db_path: str = "data/fii_dii_daily.db", output_path: str = "data/market_summary.txt") -> str:
@@ -64,5 +132,9 @@ def generate_report(db_path: str = "data/fii_dii_daily.db", output_path: str = "
 
 if __name__ == "__main__":
     output = generate_report()
+    image_path, caption = generate_summary_image()
     print(f"Summary written to: {output}")
     print(Path(output).read_text(encoding="utf-8"))
+    if image_path:
+        print(f"Chart written to: {image_path}")
+        print(f"Caption: {caption}")
