@@ -17,9 +17,10 @@ import logging
 
 from nse_client import NSEClient
 from notifier import AlertNotifier
-from report import generate_summary_image
+from report import generate_summary_image, generate_report
 from storage import DataStore
 from validation import assert_no_duplicates, validate_dataframe
+from alerts import AlertGenerator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ def main() -> None:
     client = NSEClient()
     store = DataStore()
     notifier = AlertNotifier()
+    alert_gen = AlertGenerator()
 
     try:
         dataframe = client.fetch_current_data()
@@ -45,12 +47,22 @@ def main() -> None:
         output_path = store.append_csv(validated, filename="fii_dii_daily.csv")
         logger.info("Data collection complete. Output: %s", output_path)
 
+        # Generate textual report and chart image
+        report_path = generate_report()
         image_path, caption = generate_summary_image()
-        if image_path:
-            notifier.send_telegram_photo(image_path, caption)
-            logger.info("Summary image sent: %s", image_path)
+
+        # Generate structured alerts
+        alerts = alert_gen.run_all_checks()
+        if alerts:
+            # persist alerts locally for audit
+            alert_gen.save_alerts()
+
+        # Use the enhanced notifier to deliver summary, alerts, and image together
+        delivery = notifier.notify_enhanced(alerts, summary=caption, image_path=image_path)
+        logger.info("Notification delivery results: %s", delivery)
 
         print(f"\n✓ Successfully saved {len(validated)} rows to {output_path}")
+        print(f"✓ Report written to: {report_path}")
         if image_path:
             print(f"✓ Summary image: {image_path}")
 
