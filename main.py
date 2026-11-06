@@ -1,26 +1,19 @@
 """Command-line entry point for collecting NSE FII/DII market data.
 
-This script is intentionally small and orchestrates the project layers:
-- fetch raw data from NSE
-- normalize into a dataframe
-- validate data quality
-- append the new data to the local CSV store
-- print a concise summary for easy debugging
-
-The logic is deliberately simple so the project remains easy to extend with
-historical fetching, validation, and scheduled collection.
+This script orchestrates fetching, validation, persistence, reporting, alerting,
+and notification delivery.
 """
 
 from __future__ import annotations
 
 import logging
 
+from alerts import AlertGenerator
 from nse_client import NSEClient
 from notifier import AlertNotifier
 from report import generate_summary_image, generate_report
 from storage import DataStore
 from validation import assert_no_duplicates, validate_dataframe
-from alerts import AlertGenerator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,23 +34,19 @@ def main() -> None:
 
         validated = validate_dataframe(dataframe)
         logger.info("Validation passed. %d rows retained", len(validated))
-
         validated = assert_no_duplicates(validated)
 
         output_path = store.append_csv(validated, filename="fii_dii_daily.csv")
+        # Analytics, reports, and alerts read from SQLite; keep it in sync with CSV.
+        store.append_sqlite(validated)
         logger.info("Data collection complete. Output: %s", output_path)
 
-        # Generate textual report and chart image
         report_path = generate_report()
-        image_path, caption = generate_summary_image()
-
-        # Generate structured alerts
         alerts = alert_gen.run_all_checks()
         if alerts:
-            # persist alerts locally for audit
             alert_gen.save_alerts()
 
-        # Use the enhanced notifier to deliver summary, alerts, and image together
+        image_path, caption = generate_summary_image(alerts=alerts)
         delivery = notifier.notify_enhanced(alerts, summary=caption, image_path=image_path)
         logger.info("Notification delivery results: %s", delivery)
 
